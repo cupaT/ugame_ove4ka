@@ -62,7 +62,13 @@ const app = express();
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 
-// Регистрация профиля
+/**
+ * POST /api/register
+ * - Регистрирует нового игрока или выполняет вход, если имя уже занято.
+ * - Устанавливает cookie (pid).
+ * - Ответ: { name, group, best }
+ * - Ошибки: 400 BAD_NAME/BAD_GROUP
+ */
 app.post('/api/register', (req, res) => {
     const { name, group } = req.body || {};
     const n = sanitizeName(name);
@@ -70,93 +76,80 @@ app.post('/api/register', (req, res) => {
     if (!n.ok) return res.status(400).json({ error: 'BAD_NAME', reason: n.reason });
     if (!g.ok) return res.status(400).json({ error: 'BAD_GROUP', reason: g.reason });
 
-    const existingPid = getPid(req);
-    if (existingPid) return res.status(400).json({ error: 'ALREADY_REGISTERED' });
-
     const all = ensureArray(loadAll());
     const normalizedName = normalizeNameKey(n.value);
 
-    const taken = all.some(rec => {
+    // Найти существующего игрока (логин по имени)
+    let player = all.find(rec => {
         const recNorm = rec.normalizedName || normalizeNameKey(rec.name);
         return recNorm === normalizedName;
     });
-    if (taken) return res.status(409).json({ error: 'NAME_TAKEN' });
 
-    const newPid = crypto.randomUUID();
-    const rec = {
-        pid: newPid,
-        name: n.value,
-        group: g.value,
-        normalizedName,
-        best: 0,
-        createdAt: Date.now()
-    };
-    all.push(rec);
-    saveAll(all);
+    let pid;
+    if (player) {
+        pid = player.pid;
+    } else {
+        pid = crypto.randomUUID();
+        player = {
+            pid,
+            name: n.value,
+            group: g.value,
+            normalizedName,
+            best: 0,
+            createdAt: Date.now()
+        };
+        all.push(player);
+        saveAll(all);
+    }
 
-    res.cookie(COOKIE_NAME, newPid, { httpOnly: true, sameSite: 'lax', maxAge: 365*24*3600*1000 });
-    res.json({ ok: true, player: { name: rec.name, group: rec.group, best: rec.best } });
+    res.cookie(COOKIE_NAME, pid, { httpOnly: true, sameSite: 'lax', maxAge: 365*24*3600*1000 });
+    res.json({ name: player.name, group: player.group, best: player.best });
 });
 
-// Смена имени/группы
-app.post('/api/change-name', (req, res) => {
-    const pid = getPid(req);
-    if (!pid) return res.status(401).json({ error: 'NO_SESSION' });
-
-    const { name, group } = req.body || {};
-    const n = sanitizeName(name);
-    const g = sanitizeGroup(group);
-    if (!n.ok) return res.status(400).json({ error: 'BAD_NAME', reason: n.reason });
-    if (!g.ok) return res.status(400).json({ error: 'BAD_GROUP', reason: g.reason });
-
-    const all = ensureArray(loadAll());
-    const idx = all.findIndex(x => x.pid === pid);
-    if (idx === -1) return res.status(401).json({ error: 'UNKNOWN_PLAYER' });
-
-    const normalizedName = normalizeNameKey(n.value);
-
-    const taken = all.some(rec => {
-        if (rec.pid === pid) return false;
-        const recNorm = rec.normalizedName || normalizeNameKey(rec.name);
-        return recNorm === normalizedName;
-    });
-    if (taken) return res.status(409).json({ error: 'NAME_TAKEN' });
-
-    all[idx].name = n.value;
-    all[idx].group = g.value;
-    all[idx].normalizedName = normalizedName;
-    saveAll(all);
-
-    res.json({ ok: true, player: { name: all[idx].name, group: all[idx].group, best: all[idx].best } });
-});
-
-// Сохранение результата
+/**
+ * POST /api/submit-score
+ * - Сохраняет результат игрока (только best)
+ * - Ответ: { best }
+ * - Ошибки: 401 NO_SESSION/UNKNOWN_PLAYER
+ */
 app.post('/api/submit-score', (req, res) => {
     const pid = getPid(req);
-    if (!pid) return res.status(401).json({ error: 'NO_SESSION' });
+    if (!pid) return res.status(401).json({ error: 'NO_SESSION', reason: 'Not logged in' });
 
     const score = Math.max(0, Math.floor(Number(req.body?.score || 0)));
     const all = ensureArray(loadAll());
     const idx = all.findIndex(x => x.pid === pid);
-    if (idx === -1) return res.status(401).json({ error: 'UNKNOWN_PLAYER' });
+    if (idx === -1) return res.status(401).json({ error: 'UNKNOWN_PLAYER', reason: 'Unknown player' });
 
     if (!Number.isFinite(all[idx].best) || score > all[idx].best) {
         all[idx].best = score;
         saveAll(all);
     }
-
-    const sorted = [...all].sort((a,b) => (b.best - a.best) || (a.createdAt - b.createdAt));
-    const top10 = sorted.slice(0, 10).map(({ name, group, best }, i) => ({ rank: i+1, name, group, score: best }));
-    res.json({ ok: true, best: all[idx].best, top10, total: sorted.length });
+    res.json({ best: all[idx].best });
 });
 
-// Публичный лидерборд
+/**
+ * GET /api/leaderboard
+ * - Возвращает топ игроков и общее число участников
+ * - Ответ: { top: [...], total }
+ */
 app.get('/api/leaderboard', (req, res) => {
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 10));
     const all = ensureArray(loadAll());
     const sorted = [...all].sort((a,b) => (b.best - a.best) || (a.createdAt - b.createdAt));
-    const top = sorted.slice(0, limit).map(({ name, group, best }, i) => ({ rank: i+1, name, group, score: best }));
-    res.json({ top10: top, total: sorted.length });
+    const top = sorted.slice(0, limit).map(({ name, group, best }, i) => ({
+        rank: i+1, name, group, score: best
+    }));
+    res.json({ top, total: sorted.length });
+});
+
+/**
+ * POST /api/logout
+ * - Удаляет cookie, всегда возвращает { success: true }
+ */
+app.post('/api/logout', (req, res) => {
+    res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'lax' });
+    res.json({ success: true });
 });
 
 // Статика

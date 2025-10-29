@@ -12,6 +12,7 @@ function readJSON(key, fallback) {
   catch { return fallback; }
 }
 function writeJSON(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} }
+function removeKey(key) { try { localStorage.removeItem(key); } catch {} }
 
 async function jsonFetch(url, options = {}) {
   const r = await fetch(url, {
@@ -49,7 +50,7 @@ function sanitizeClientGroup(group, maxLen = 24) {
   return { ok: true, value: s };
 }
 
-// Регистрация профиля
+// Регистрация/вход профиля
 export async function registerProfile(name, group) {
   const n = sanitizeClientName(name);
   if (!n.ok) return { ok: false, reason: n.reason };
@@ -57,44 +58,17 @@ export async function registerProfile(name, group) {
   if (!g.ok) return { ok: false, reason: g.reason };
 
   try {
+    // Сервер возвращает { name, group, best }
     const res = await jsonFetch(`${API_BASE}/register`, {
       method: 'POST',
       body: JSON.stringify({ name: n.value, group: g.value })
     });
-    const player = { name: n.value, group: g.value, best: Number(res?.player?.best) || 0 };
+    const player = { name: res.name, group: res.group, best: Number(res.best) || 0 };
     writeJSON(KEY_PLAYER, player);
     return { ok: true, player };
   } catch (e) {
-    if (e.payload?.error === 'NAME_TAKEN' || e.status === 409) return { ok: false, reason: 'NAME_TAKEN' };
-    if (e.payload?.error === 'BAD_NAME') return { ok: false, reason: 'BAD_NAME' };
+    if (e.payload?.error === 'BAD_NAME' || e.status === 400) return { ok: false, reason: 'BAD_NAME' };
     if (e.payload?.error === 'BAD_GROUP') return { ok: false, reason: 'BAD_GROUP' };
-    return { ok: false, reason: 'NETWORK' };
-  }
-}
-
-// Смена профиля
-export async function changeProfile(name, group) {
-  const me = getPlayer();
-  if (!me) return { ok: false, reason: 'NO_PLAYER' };
-
-  const n = sanitizeClientName(name);
-  if (!n.ok) return { ok: false, reason: n.reason };
-  const g = sanitizeClientGroup(group);
-  if (!g.ok) return { ok: false, reason: g.reason };
-
-  try {
-    await jsonFetch(`${API_BASE}/change-name`, {
-      method: 'POST',
-      body: JSON.stringify({ name: n.value, group: g.value })
-    });
-    const updated = { name: n.value, group: g.value, best: me.best };
-    writeJSON(KEY_PLAYER, updated);
-    return { ok: true, player: updated };
-  } catch (e) {
-    if (e.payload?.error === 'NAME_TAKEN' || e.status === 409) return { ok: false, reason: 'NAME_TAKEN' };
-    if (e.payload?.error === 'BAD_NAME') return { ok: false, reason: 'BAD_NAME' };
-    if (e.payload?.error === 'BAD_GROUP') return { ok: false, reason: 'BAD_GROUP' };
-    if (e.payload?.error === 'NO_SESSION') return { ok: false, reason: 'NO_SESSION' };
     return { ok: false, reason: 'NETWORK' };
   }
 }
@@ -114,15 +88,20 @@ export async function submitScore(scoreRaw) {
   const updated = { name: player.name, group: player.group, best };
   writeJSON(KEY_PLAYER, updated);
 
-  return {
-    best: updated.best,
-    top10: res?.top10 || [],
-    total: Number(res?.total) || 0
-  };
+  return { best: updated.best };
 }
 
 // Получение таблицы лидеров
 export async function fetchLeaderboard(limit = 10) {
   const res = await jsonFetch(`${API_BASE}/leaderboard?limit=${encodeURIComponent(limit)}`);
-  return { top10: res?.top10 || [], total: Number(res?.total) || 0 };
+  return { top: res?.top || [], total: Number(res?.total) || 0 };
+}
+
+// Выход из профиля
+export async function logoutProfile() {
+  try {
+    await jsonFetch(`${API_BASE}/logout`, { method: 'POST' });
+  } finally {
+    removeKey(KEY_PLAYER);
+  }
 }

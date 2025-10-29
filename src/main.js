@@ -7,7 +7,10 @@ import { getPlayerHitbox, getObstacleHitbox, aabb } from './hitbox.js';
 import { spawnObstacle, updateObstacles } from './obstacles.js';
 import { setupInput } from './input.js';
 import { createState, resetGame } from './state.js';
-import { getPlayer, canEnterName, registerProfile, submitScore, fetchLeaderboard, changeProfile } from './leaderboard.js';
+import {
+  getPlayer, canEnterName, registerProfile,
+  submitScore, fetchLeaderboard, logoutProfile
+} from './leaderboard.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -15,6 +18,7 @@ const ctx = canvas.getContext('2d');
 const elScore = document.getElementById('score');
 const elHi = document.getElementById('hi');
 const startBtn = document.getElementById('startBtn');
+const logoutBtn = document.getElementById('logoutBtn');
 const jumpBtn = document.getElementById('jumpBtn');
 const duckBtn = document.getElementById('duckBtn');
 const elPlayerName = document.getElementById('playerNameHud');
@@ -39,6 +43,11 @@ const failBadge = document.getElementById('failBadge');
 const failScoreEl = document.getElementById('failScore');
 const failRestartBtn = document.getElementById('failRestartBtn');
 const failMenuBtn = document.getElementById('failMenuBtn');
+
+// Модалка выхода
+const logoutModal = document.getElementById('logoutModal');
+const logoutConfirmBtn = document.getElementById('logoutConfirmBtn');
+const logoutCancelBtn = document.getElementById('logoutCancelBtn');
 
 /* Управление видимостью тач-кнопок */
 const touchControls = document.querySelector('.touch-controls');
@@ -74,21 +83,11 @@ function setNameError(msg='') {
   nameInput.classList.toggle('invalid', !!msg && !isGroup);
   groupInput.classList.toggle('invalid', !!msg && isGroup);
 }
-function openNameModal(mode='register') {
-  nameModal.dataset.mode = mode;
-  if (mode === 'register') {
-    nameTitle.textContent = 'Введите имя и группу';
-    nameDesc.textContent = 'Имя: буквы и пробелы. Группа: буквы, цифры и дефис “-” (автоматически upper-case).';
-    nameInput.value = ''; groupInput.value = '';
-  } else {
-    const me = getPlayer();
-    nameTitle.textContent = 'Сменить имя и/или группу';
-    nameDesc.textContent = 'Имя: буквы и пробелы. Группа: буквы, цифры и дефис “-”.';
-    nameInput.value = me?.name || '';
-    groupInput.value = me?.group || '';
-  }
-  nameCancelBtn?.classList.toggle('hidden', mode === 'register');
-
+function openNameModal() {
+  nameTitle.textContent = 'Введите имя и группу';
+  nameDesc.textContent = 'Имя: буквы и пробелы. Группа: буквы, цифры и дефис “-” (автоматически upper-case).';
+  nameInput.value = '';
+  groupInput.value = '';
   setNameError('');
   nameModal.classList.remove('hidden');
   menuModal.classList.add('hidden');
@@ -97,8 +96,22 @@ function openNameModal(mode='register') {
   nameInput.focus();
 }
 function closeNameModal() { nameModal.classList.add('hidden'); }
-function openMenu() { menuModal.classList.remove('hidden'); closeFail(); showTouchControls(false); }
+function openMenu() {
+  menuModal.classList.remove('hidden');
+  closeFail();
+  showTouchControls(false);
+  // показать/скрыть кнопку выхода в зависимости от наличия игрока
+  const hasPlayer = !!getPlayer();
+  logoutBtn?.classList.toggle('hidden', !hasPlayer);
+}
 function closeMenu() { menuModal.classList.add('hidden'); }
+
+function openLogoutModal() {
+  logoutModal?.classList.remove('hidden');
+  closeMenu();
+  showTouchControls(false);
+}
+function closeLogoutModal() { logoutModal?.classList.add('hidden'); }
 
 /* Поражение */
 function openFail(score=0, isRecord=false) {
@@ -137,13 +150,13 @@ function showLbLoading(count = 8) {
 }
 
 /* Рендер лидерборда */
-function renderLeaderboardUI(top10 = [], total = 0) {
+function renderLeaderboardUI(items = [], total = 0) {
   lbList.classList.remove('loading');
   lbList.innerHTML = '';
 
   const me = getPlayer();
 
-  top10.forEach((item, idx) => {
+  items.forEach((item, idx) => {
     const li = document.createElement('li');
     const topClass = idx === 0 ? 'top1' : idx === 1 ? 'top2' : idx === 2 ? 'top3' : '';
     const isMe = me && item.name === me.name;
@@ -166,8 +179,8 @@ function renderLeaderboardUI(top10 = [], total = 0) {
 async function refreshLeaderboard() {
   showLbLoading(8);
   try {
-    const { top10, total } = await fetchLeaderboard(10);
-    renderLeaderboardUI(top10, total);
+    const { top, total } = await fetchLeaderboard(10);
+    renderLeaderboardUI(top, total);
   } catch {
     renderLeaderboardUI([], 0);
   }
@@ -177,46 +190,29 @@ async function refreshLeaderboard() {
 function applyPlayerUI() {
   const p = getPlayer();
   elPlayerName.textContent = p ? `${p.group} · ${p.name}` : '—';
-  elPlayerName.title = p ? 'Нажмите, чтобы изменить имя/группу' : 'Укажите имя и группу';
+  elPlayerName.title = p ? 'Нажмите, чтобы выйти из аккаунта' : 'Укажите имя и группу';
   const hi = p?.best ? Math.floor(p.best) : 0;
   elHi.textContent = 'HI ' + hi;
 }
 
-/* Сохранение профиля */
+/* Сохранение профиля (регистрация/вход) */
 async function submitName() {
-  const mode = nameModal.dataset.mode || 'register';
   const rawName = nameInput.value || '';
   const rawGroup = groupInput.value || '';
   setNameError('');
   nameSaveBtn.disabled = true;
 
   try {
-    if (mode === 'register') {
-      const res = await registerProfile(rawName, rawGroup);
-      if (!res.ok) {
-        if (res.reason === 'NAME_TAKEN') return setNameError('Такое имя уже занято.');
-        if (res.reason === 'BAD_NAME' || res.reason === 'EMPTY_NAME') return setNameError('Недопустимое имя. Разрешены буквы и пробел.');
-        if (res.reason === 'BAD_GROUP' || res.reason === 'EMPTY_GROUP') return setNameError('Недопустимая группа. Разрешены буквы, цифры и дефис “-”.');
-        return setNameError('Не удалось сохранить. Попробуйте позже.');
-      }
-      closeNameModal();
-      applyPlayerUI();
-      await refreshLeaderboard();
-      openMenu();
-    } else {
-      const res = await changeProfile(rawName, rawGroup);
-      if (!res.ok) {
-        if (res.reason === 'NAME_TAKEN') return setNameError('Такое имя уже занято.');
-        if (res.reason === 'BAD_NAME' || res.reason === 'EMPTY_NAME') return setNameError('Недопустимое имя. Разрешены буквы и пробел.');
-        if (res.reason === 'BAD_GROUP' || res.reason === 'EMPTY_GROUP') return setNameError('Недопустимая группа. Разрешены буквы, цифры и дефис “-”.');
-        if (res.reason === 'NO_SESSION') return setNameError('Сессия не найдена. Перезагрузите страницу.');
-        return setNameError('Не удалось изменить. Попробуйте позже.');
-      }
-      closeNameModal();
-      applyPlayerUI();
-      await refreshLeaderboard();
-      if (!state.started || state.gameOver) openMenu();
+    const res = await registerProfile(rawName, rawGroup);
+    if (!res.ok) {
+      if (res.reason === 'BAD_NAME' || res.reason === 'EMPTY_NAME') return setNameError('Недопустимое имя. Разрешены буквы и пробел.');
+      if (res.reason === 'BAD_GROUP' || res.reason === 'EMPTY_GROUP') return setNameError('Недопустимая группа. Разрешены буквы, цифры и дефис “-”.');
+      return setNameError('Не удалось сохранить. Попробуйте позже.');
     }
+    closeNameModal();
+    applyPlayerUI();
+    await refreshLeaderboard();
+    openMenu();
   } finally {
     nameSaveBtn.disabled = false;
   }
@@ -237,18 +233,14 @@ nameCancelBtn.addEventListener('click', () => {
 [nameInput, groupInput].forEach(inp => {
   inp.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); submitName(); }
-    else if (e.key === 'Escape') {
-      const mode = nameModal.dataset.mode || 'register';
-      if (mode === 'change') { e.preventDefault(); nameCancelBtn.click(); }
-    }
   });
 });
 
-/* Смена профиля по клику на HUD */
+/* Клик по HUD-имени: если есть профиль — предложить выйти; иначе — зарегистрироваться */
 elPlayerName?.addEventListener('click', () => {
   const me = getPlayer();
-  if (!me) return openNameModal('register');
-  openNameModal('change');
+  if (!me) return openNameModal();
+  openLogoutModal();
 });
 
 /* Кнопки модалки поражения */
@@ -265,9 +257,28 @@ failMenuBtn?.addEventListener('click', () => {
   openMenu();
 });
 
+/* Кнопка меню: Выйти */
+logoutBtn?.addEventListener('click', openLogoutModal);
+
+/* Модалка выхода: подтверждение/отмена */
+logoutConfirmBtn?.addEventListener('click', async () => {
+  try {
+    await logoutProfile();
+  } finally {
+    closeLogoutModal();
+    applyPlayerUI();
+    await refreshLeaderboard().catch(()=>{});
+    openNameModal();
+  }
+});
+logoutCancelBtn?.addEventListener('click', () => {
+  closeLogoutModal();
+  openMenu();
+});
+
 /* Старт */
 startBtn.addEventListener('click', async () => {
-  if (canEnterName()) return openNameModal('register');
+  if (canEnterName()) return openNameModal();
   state.started = true;
   state.running = true;
   state.gameOver = false;
@@ -279,7 +290,7 @@ startBtn.addEventListener('click', async () => {
 /* Инициализация UI */
 applyPlayerUI();
 refreshLeaderboard().catch(()=>{});
-if (canEnterName()) { openNameModal('register'); showTouchControls(false); }
+if (canEnterName()) { openNameModal(); showTouchControls(false); }
 else { openMenu(); }
 
 /* Вспомогательное */
@@ -404,7 +415,7 @@ async function endGame() {
     else { blip(140, 0.08, -12); }
 
     await refreshLeaderboard();
-    applyPlayerUI(); // обновить HI в HUD после сохранения
+    applyPlayerUI();
     openFail(finalizedScore, isRecord);
   } catch {
     await refreshLeaderboard().catch(()=>{});
