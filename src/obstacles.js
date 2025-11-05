@@ -50,6 +50,7 @@ export function spawnObstacle(state, IMGS, getAspect) {
     const w = desiredH * aspect;
 
     state.obstacles.push({ kind: 'fence', x: state.metrics.VW + 10, y: groundY - desiredH, w, h: desiredH });
+    state.runTicks = (state.runTicks || 0) + 1;
 
     // Двойной
     if (Math.random() < (SPACING.doubleFenceChance ?? 0.4)) {
@@ -66,6 +67,7 @@ export function spawnObstacle(state, IMGS, getAspect) {
       const w2 = h2 * aspect;
 
       state.obstacles.push({ kind: 'fence', x: state.metrics.VW + 10 + w + gap, y: groundY - h2, w: w2, h: h2 });
+      state.runTicks = (state.runTicks || 0) + 1;
     }
   } else {
     // Низкое облако — фикс нижняя грань хитбокса
@@ -79,6 +81,7 @@ export function spawnObstacle(state, IMGS, getAspect) {
     const y = cloudBottom - desiredH * (1 - (cfg?.bottom ?? 0));
 
     state.obstacles.push({ kind: 'lowcloud', x: state.metrics.VW + 10, y, w, h: desiredH });
+    state.runTicks = (state.runTicks || 0) + 1;
   }
 }
 

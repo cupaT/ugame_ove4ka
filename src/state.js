@@ -20,6 +20,10 @@ export function createState() {
     // Прогресс
     score: 0,
 
+    // Данные текущего забега
+    challenge: null,       // одноразовый challenge от сервера
+    runTicks: 0,           // количество сгенерированных препятствий (для proof)
+
     // Физика/скорость
     gravity: PHYSICS.gravity,
     jumpVel: PHYSICS.jumpVel,
@@ -61,6 +65,9 @@ export function resetGame(state) {
   state.stars.length = 0;
   state.obstTimer = 0;
   state.bgCloudTimer = 0;
+
+  // Данные забега
+  state.runTicks = 0;
 
   // Сброс игрока
   state.player = { x: 90, y: groundY - size, w: size, h: size, vy: 0, onGround: true, duck: false };

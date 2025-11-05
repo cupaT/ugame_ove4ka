@@ -62,6 +62,24 @@ const app = express();
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 
+// ========== Защита submit-score: одноразовые challenge-токены ==========
+const CHALLENGE_TTL_MS = 5 * 60 * 1000; // 5 минут
+// Память: pid -> { challenge, expiresAt }
+const RUN_TOKENS = new Map();
+
+function now() { return Date.now(); }
+function purgeExpiredChallenges() {
+    const t = now();
+    for (const [pid, data] of RUN_TOKENS.entries()) {
+        if (!data || data.expiresAt <= t) RUN_TOKENS.delete(pid);
+    }
+}
+setInterval(purgeExpiredChallenges, 60 * 1000).unref();
+
+function sha256Hex(str) {
+    return crypto.createHash('sha256').update(str, 'utf8').digest('hex');
+}
+
 /**
  * POST /api/register
  * - Регистрирует нового игрока или выполняет вход, если имя уже занято.
@@ -107,20 +125,63 @@ app.post('/api/register', (req, res) => {
 });
 
 /**
+ * POST /api/start-run
+ * - Выдаёт одноразовый challenge для текущей сессии.
+ * - Требует сессию (cookie).
+ * - Ответ: { challenge, ttl }
+ */
+app.post('/api/start-run', (req, res) => {
+    const pid = getPid(req);
+    if (!pid) return res.status(401).json({ error: 'NO_SESSION', reason: 'Not logged in' });
+
+    const all = ensureArray(loadAll());
+    const exists = all.some(x => x.pid === pid);
+    if (!exists) return res.status(401).json({ error: 'UNKNOWN_PLAYER', reason: 'Unknown player' });
+
+    // Одноразовый challenge, перетираем старый
+    const challenge = crypto.randomUUID().replace(/-/g, '') + crypto.randomBytes(8).toString('hex');
+    RUN_TOKENS.set(pid, { challenge, expiresAt: now() + CHALLENGE_TTL_MS });
+
+    res.json({ challenge, ttl: Math.floor(CHALLENGE_TTL_MS / 1000) });
+});
+
+/**
  * POST /api/submit-score
  * - Сохраняет результат игрока (только best)
+ * - Требует: { score, ticks, challenge, proof } где
+ *   proof = sha256(`${score}:${ticks}:${challenge}`)
  * - Ответ: { best }
- * - Ошибки: 401 NO_SESSION/UNKNOWN_PLAYER
+ * - Ошибки: 401 NO_SESSION/UNKNOWN_PLAYER; 400 BAD_PROOF; 410 CHALLENGE_EXPIRED
  */
 app.post('/api/submit-score', (req, res) => {
     const pid = getPid(req);
     if (!pid) return res.status(401).json({ error: 'NO_SESSION', reason: 'Not logged in' });
 
-    const score = Math.max(0, Math.floor(Number(req.body?.score || 0)));
     const all = ensureArray(loadAll());
     const idx = all.findIndex(x => x.pid === pid);
     if (idx === -1) return res.status(401).json({ error: 'UNKNOWN_PLAYER', reason: 'Unknown player' });
 
+    const score = Math.max(0, Math.floor(Number(req.body?.score || 0)));
+    const ticks = Math.max(0, Math.floor(Number(req.body?.ticks || 0)));
+    const challengeFromClient = String(req.body?.challenge || '');
+    const proof = String(req.body?.proof || '');
+
+    // Сверка challenge
+    const token = RUN_TOKENS.get(pid);
+    RUN_TOKENS.delete(pid); // одноразовый независимо от результата проверки
+    if (!token) return res.status(410).json({ error: 'CHALLENGE_EXPIRED', reason: 'No active challenge' });
+    if (token.expiresAt <= now()) return res.status(410).json({ error: 'CHALLENGE_EXPIRED', reason: 'Challenge timed out' });
+    if (token.challenge !== challengeFromClient) {
+        return res.status(400).json({ error: 'BAD_PROOF', reason: 'Challenge mismatch' });
+    }
+
+    // Проверка подписи
+    const serverProof = sha256Hex(`${score}:${ticks}:${token.challenge}`);
+    if (serverProof !== proof) {
+        return res.status(400).json({ error: 'BAD_PROOF', reason: 'Invalid proof' });
+    }
+
+    // Всё ок — обновляем лучший результат
     if (!Number.isFinite(all[idx].best) || score > all[idx].best) {
         all[idx].best = score;
         saveAll(all);

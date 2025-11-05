@@ -73,15 +73,35 @@ export async function registerProfile(name, group) {
   }
 }
 
+// Хелпер: sha256 в hex
+async function sha256Hex(str) {
+  const enc = new TextEncoder().encode(str);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  const arr = Array.from(new Uint8Array(buf));
+  return arr.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Запрос одноразового challenge перед стартом забега
+export async function startRun() {
+  const res = await jsonFetch(`${API_BASE}/start-run`, { method: 'POST', body: JSON.stringify({}) });
+  return { challenge: String(res.challenge || ''), ttl: Number(res.ttl) || 0 };
+}
+
 // Сохранение результата
-export async function submitScore(scoreRaw) {
+export async function submitScore(scoreRaw, ticks, challenge) {
   const player = getPlayer();
   if (!player) throw new Error('NO_PLAYER');
 
   const score = Math.max(0, Math.floor(Number(scoreRaw) || 0));
+  const safeTicks = Math.max(0, Math.floor(Number(ticks) || 0));
+  const ch = String(challenge || '');
+
+  // proof = sha256(`${score}:${ticks}:${challenge}`)
+  const proof = await sha256Hex(`${score}:${safeTicks}:${ch}`);
+
   const res = await jsonFetch(`${API_BASE}/submit-score`, {
     method: 'POST',
-    body: JSON.stringify({ score })
+    body: JSON.stringify({ score, ticks: safeTicks, challenge: ch, proof })
   });
 
   const best = Number(res?.best) || Math.max(player.best, score);

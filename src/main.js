@@ -9,7 +9,7 @@ import { setupInput } from './input.js';
 import { createState, resetGame } from './state.js';
 import {
   getPlayer, canEnterName, registerProfile,
-  submitScore, fetchLeaderboard, logoutProfile
+  submitScore, fetchLeaderboard, logoutProfile, startRun
 } from './leaderboard.js';
 
 const canvas = document.getElementById('game');
@@ -279,9 +279,20 @@ logoutCancelBtn?.addEventListener('click', () => {
 /* Старт */
 startBtn.addEventListener('click', async () => {
   if (canEnterName()) return openNameModal();
+
+  // Получить одноразовый challenge перед началом забега
+  try {
+    const { challenge } = await startRun();
+    state.challenge = challenge || null;
+  } catch {
+    // Если сервер не вернул challenge — не стартуем
+    return openMenu();
+  }
+
   state.started = true;
   state.running = true;
   state.gameOver = false;
+  state.runTicks = 0; // сброс счётчика препятствий
   closeMenu();
   showTouchControls(true);
   resetGame(state);
@@ -407,18 +418,22 @@ async function endGame() {
   const prevBest = getPlayer()?.best || 0;
 
   try {
-    const { best } = await submitScore(finalizedScore);
+    // submitScore со значением ticks = количество сгенерированных препятствий и одноразовым challenge
+    const { best } = await submitScore(finalizedScore, state.runTicks, state.challenge);
     const bestFromServer = Number(best) || prevBest;
 
     const isRecord = finalizedScore > prevBest && bestFromServer === finalizedScore;
     if (isRecord) { blip(660, 0.08, 0); setTimeout(() => blip(990, 0.1, 0), 100); }
     else { blip(140, 0.08, -12); }
 
+    // Обновить лидборд отдельным запросом
     await refreshLeaderboard();
-    applyPlayerUI();
+    applyPlayerUI(); // обновить HI
     openFail(finalizedScore, isRecord);
   } catch {
     await refreshLeaderboard().catch(()=>{});
     openFail(finalizedScore, false);
+  } finally {
+    state.challenge = null;
   }
 }
