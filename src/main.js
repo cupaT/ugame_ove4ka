@@ -244,11 +244,20 @@ elPlayerName?.addEventListener('click', () => {
 });
 
 /* Кнопки модалки поражения */
-failRestartBtn?.addEventListener('click', () => {
+failRestartBtn?.addEventListener('click', async () => {
   closeFail();
+  // Запросить новый challenge от сервера
+  try {
+    const { challenge } = await startRun();
+    state.challenge = challenge || null;
+  } catch {
+    openMenu();
+    return;
+  }
   state.started = true;
   state.running = true;
   state.gameOver = false;
+  state.runTicks = 0;
   showTouchControls(true);
   resetGame(state);
 });
